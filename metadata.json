@@ -1,0 +1,6 @@
+{
+  "name": "MISSION AI",
+  "description": "Learn Smarter, Achieve More. Secure Authentication, Anonymous Guest Access, Account Linking, User Identity Management & Data Isolation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

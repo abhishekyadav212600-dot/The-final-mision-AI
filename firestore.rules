@@ -1,0 +1,269 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net: default-deny all reads and writes unless explicitly matched below
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // -------------------------------------------------------------------------
+    // Global Hardened Primitives
+    // -------------------------------------------------------------------------
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function ownsUserData(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function isValidNullableString(val, maxLen) {
+      return val == null || (val is string && val.size() <= maxLen);
+    }
+
+    // -------------------------------------------------------------------------
+    // Entity Validation Blueprints
+    // -------------------------------------------------------------------------
+    function isValidUserProfile(data) {
+      return data.keys().hasAll([
+          'uid',
+          'accountType',
+          'isAnonymous',
+          'onboardingCompleted',
+          'linkedProviders',
+          'accountStatus',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid',
+          'accountType',
+          'isAnonymous',
+          'displayName',
+          'email',
+          'emailVerified',
+          'photoURL',
+          'onboardingCompleted',
+          'linkedProviders',
+          'accountStatus',
+          'createdAt',
+          'updatedAt'
+        ])
+        && isValidId(data.uid)
+        && data.uid == request.auth.uid
+        && data.accountType in ['guest', 'registered']
+        && data.isAnonymous is bool
+        && (
+          (request.auth.token.firebase.sign_in_provider == 'anonymous'
+            && data.accountType == 'guest'
+            && data.isAnonymous == true
+            && data.linkedProviders.size() == 0)
+          || (request.auth.token.firebase.sign_in_provider != 'anonymous'
+            && data.accountType == 'registered'
+            && data.isAnonymous == false
+            && data.linkedProviders.size() >= 1)
+        )
+        && (!('displayName' in data) || isValidNullableString(data.displayName, 120))
+        && (!('email' in data) || isValidNullableString(data.email, 254))
+        && (!('emailVerified' in data) || data.emailVerified is bool)
+        && (!('photoURL' in data) || isValidNullableString(data.photoURL, 512))
+        && data.onboardingCompleted is bool
+        && data.linkedProviders is list
+        && data.linkedProviders.size() <= 10
+        && (data.linkedProviders.size() == 0 || (data.linkedProviders[0] is string && data.linkedProviders[0].size() <= 64))
+        && data.linkedProviders.hasOnly(['google.com', 'apple.com', 'microsoft.com', 'password'])
+        && data.accountStatus in ['active', 'deletion_pending']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidUserSettings(data) {
+      return data.keys().hasAll([
+          'uid',
+          'sessionPersistence',
+          'dataRetentionNoticeSeen',
+          'securityNotifications',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid',
+          'sessionPersistence',
+          'dataRetentionNoticeSeen',
+          'securityNotifications',
+          'createdAt',
+          'updatedAt'
+        ])
+        && isValidId(data.uid)
+        && data.uid == request.auth.uid
+        && data.sessionPersistence in ['local', 'session']
+        && data.dataRetentionNoticeSeen is bool
+        && data.securityNotifications is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidIsolationProbe(data) {
+      return data.keys().hasAll([
+          'uid',
+          'label',
+          'scope',
+          'createdUnderMode',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid',
+          'label',
+          'scope',
+          'createdUnderMode',
+          'createdAt',
+          'updatedAt'
+        ])
+        && isValidId(data.uid)
+        && data.uid == request.auth.uid
+        && data.label is string
+        && data.label.size() >= 1
+        && data.label.size() <= 160
+        && data.scope in ['isolation_check', 'linking_preservation', 'session_continuity']
+        && data.createdUnderMode in ['guest', 'registered']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // -------------------------------------------------------------------------
+    // Collection Rules: /users/{uid}
+    // -------------------------------------------------------------------------
+    match /users/{uid} {
+      // PII & identity isolation: only the authenticated owner can read their own profile
+      allow get: if isValidId(uid) && ownsUserData(uid);
+      // Never allow listing/enumerating users across accounts
+      allow list: if false;
+
+      allow create: if isSignedIn()
+        && isValidId(uid)
+        && ownsUserData(uid)
+        && isValidUserProfile(incoming())
+        && incoming().uid == uid
+        && incoming().accountStatus == 'active'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isSignedIn()
+        && isValidId(uid)
+        && ownsUserData(uid)
+        && isValidUserProfile(incoming())
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && existing().accountStatus != 'deletion_pending'
+        && (
+          // Action 1: Safe profile metadata / onboarding update
+          (incoming().accountType == existing().accountType
+            && incoming().isAnonymous == existing().isAnonymous
+            && incoming().accountStatus == existing().accountStatus
+            && incoming().linkedProviders == existing().linkedProviders
+            && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'onboardingCompleted', 'emailVerified', 'photoURL', 'updatedAt']))
+          // Action 2: Guest-to-Registered Credential Linking Upgrade (UID preserved)
+          || (existing().accountType == 'guest'
+            && existing().isAnonymous == true
+            && incoming().accountType == 'registered'
+            && incoming().isAnonymous == false
+            && incoming().accountStatus == 'active'
+            && request.auth.token.firebase.sign_in_provider != 'anonymous'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['accountType', 'isAnonymous', 'displayName', 'email', 'emailVerified', 'photoURL', 'linkedProviders', 'updatedAt']))
+          // Action 3: Registered user linking or syncing an additional provider
+          || (existing().accountType == 'registered'
+            && incoming().accountType == 'registered'
+            && incoming().isAnonymous == false
+            && incoming().accountStatus == 'active'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'emailVerified', 'photoURL', 'linkedProviders', 'updatedAt']))
+          // Action 4: Mark account deletion pending (terminal state lock)
+          || (incoming().accountStatus == 'deletion_pending'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['accountStatus', 'updatedAt']))
+        );
+
+      allow delete: if isValidId(uid) && ownsUserData(uid);
+
+      // -----------------------------------------------------------------------
+      // Subcollection: /users/{uid}/private/{docId}
+      // -----------------------------------------------------------------------
+      match /private/{docId} {
+        allow get: if isValidId(uid) && isValidId(docId) && ownsUserData(uid);
+        allow list: if isValidId(uid) && ownsUserData(uid) && resource.data.uid == request.auth.uid;
+
+        allow create: if isSignedIn()
+          && isValidId(uid)
+          && isValidId(docId)
+          && ownsUserData(uid)
+          && isValidUserSettings(incoming())
+          && incoming().uid == uid
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && exists(/databases/$(database)/documents/users/$(uid));
+
+        allow update: if isSignedIn()
+          && isValidId(uid)
+          && isValidId(docId)
+          && ownsUserData(uid)
+          && isValidUserSettings(incoming())
+          && incoming().uid == existing().uid
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'sessionPersistence',
+            'dataRetentionNoticeSeen',
+            'securityNotifications',
+            'updatedAt'
+          ]);
+
+        allow delete: if isValidId(uid) && isValidId(docId) && ownsUserData(uid);
+      }
+
+      // -----------------------------------------------------------------------
+      // Subcollection: /users/{uid}/isolation_probes/{probeId}
+      // -----------------------------------------------------------------------
+      match /isolation_probes/{probeId} {
+        allow get: if isValidId(uid) && isValidId(probeId) && ownsUserData(uid);
+        allow list: if isValidId(uid) && ownsUserData(uid) && resource.data.uid == request.auth.uid;
+
+        allow create: if isSignedIn()
+          && isValidId(uid)
+          && isValidId(probeId)
+          && ownsUserData(uid)
+          && isValidIsolationProbe(incoming())
+          && incoming().uid == uid
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && exists(/databases/$(database)/documents/users/$(uid));
+
+        allow update: if isSignedIn()
+          && isValidId(uid)
+          && isValidId(probeId)
+          && ownsUserData(uid)
+          && isValidIsolationProbe(incoming())
+          && incoming().uid == existing().uid
+          && incoming().createdUnderMode == existing().createdUnderMode
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['label', 'scope', 'updatedAt']);
+
+        allow delete: if isValidId(uid) && isValidId(probeId) && ownsUserData(uid);
+      }
+    }
+  }
+}

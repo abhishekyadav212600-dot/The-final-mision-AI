@@ -1,0 +1,186 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Private root identity and authentication profile document for a MISSION AI user (guest or registered), strictly isolated by Firebase UID.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Authentication UID matching the document ID and owner."
+        },
+        "accountType": {
+          "type": "string",
+          "enum": ["guest", "registered"],
+          "description": "Authentication classification derived from Firebase Auth provider state."
+        },
+        "isAnonymous": {
+          "type": "boolean",
+          "description": "True when the user is currently an anonymous guest session."
+        },
+        "displayName": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "Optional user display name."
+        },
+        "email": {
+          "type": "string",
+          "maxLength": 254,
+          "description": "Optional email address when linked or signed in with a permanent provider."
+        },
+        "emailVerified": {
+          "type": "boolean",
+          "description": "Whether the linked email address has been verified."
+        },
+        "photoURL": {
+          "type": "string",
+          "maxLength": 512,
+          "description": "Optional profile avatar URL from OAuth provider."
+        },
+        "onboardingCompleted": {
+          "type": "boolean",
+          "description": "Tracks whether initial security orientation is completed."
+        },
+        "linkedProviders": {
+          "type": "array",
+          "description": "List of linked Firebase Auth provider IDs (e.g., google.com, password, apple.com, microsoft.com)."
+        },
+        "accountStatus": {
+          "type": "string",
+          "enum": ["active", "deletion_pending"],
+          "description": "Current lifecycle state of the user account."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Immutable server timestamp when profile was initialized."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the latest profile update."
+        }
+      },
+      "required": [
+        "uid",
+        "accountType",
+        "isAnonymous",
+        "onboardingCompleted",
+        "linkedProviders",
+        "accountStatus",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "UserPrivateSettings": {
+      "title": "UserPrivateSettings",
+      "description": "Isolated private security and session preferences belonging exclusively to a single UID.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Owner Firebase UID."
+        },
+        "sessionPersistence": {
+          "type": "string",
+          "enum": ["local", "session"],
+          "description": "Preferred client session persistence mode."
+        },
+        "dataRetentionNoticeSeen": {
+          "type": "boolean",
+          "description": "Whether the guest data retention and recovery policy notice was acknowledged."
+        },
+        "securityNotifications": {
+          "type": "boolean",
+          "description": "Whether security event alerts are enabled."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Immutable server timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the latest update."
+        }
+      },
+      "required": [
+        "uid",
+        "sessionPersistence",
+        "dataRetentionNoticeSeen",
+        "securityNotifications",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "IsolationProbeRecord": {
+      "title": "IsolationProbeRecord",
+      "description": "Security verification record stored under a user's isolated namespace to verify UID ownership, persistence across guest-to-registered linking, and cross-account isolation.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Owner Firebase UID."
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "description": "Human-readable verification label."
+        },
+        "scope": {
+          "type": "string",
+          "enum": ["isolation_check", "linking_preservation", "session_continuity"],
+          "description": "Category of security verification record."
+        },
+        "createdUnderMode": {
+          "type": "string",
+          "enum": ["guest", "registered"],
+          "description": "Account mode when this record was originally created."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Immutable server timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of latest modification."
+        }
+      },
+      "required": [
+        "uid",
+        "label",
+        "scope",
+        "createdUnderMode",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{uid}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Private user identity profile strictly owned by {uid}."
+    },
+    "/users/{uid}/private/{docId}": {
+      "schema": { "$ref": "#/entities/UserPrivateSettings" },
+      "description": "Private security and session preferences strictly owned by {uid}."
+    },
+    "/users/{uid}/isolation_probes/{probeId}": {
+      "schema": { "$ref": "#/entities/IsolationProbeRecord" },
+      "description": "Private security verification records strictly owned by {uid} to verify cross-account isolation and UID preservation across account linking."
+    }
+  }
+}
